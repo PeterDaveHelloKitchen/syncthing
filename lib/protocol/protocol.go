@@ -91,12 +91,14 @@ type rawConnection struct {
 	cr *countingReader
 	cw *countingWriter
 
-	awaiting    [4096]chan asyncResult
+	awaiting    map[int32]chan asyncResult
 	awaitingMut sync.Mutex
 
 	idxMut sync.Mutex // ensures serialization of Index calls
 
-	nextID      chan int
+	nextID    int32
+	nextIDMut sync.Mutex
+
 	outbox      chan hdrMsg
 	closed      chan struct{}
 	once        sync.Once
@@ -142,8 +144,8 @@ func NewConnection(deviceID DeviceID, reader io.Reader, writer io.Writer, receiv
 		receiver: nativeModel{receiver},
 		cr:       cr,
 		cw:       cw,
+		awaiting: make(map[int32]chan asyncResult),
 		outbox:   make(chan hdrMsg),
-		nextID:   make(chan int),
 		closed:   make(chan struct{}),
 		pool: sync.Pool{
 			New: func() interface{} {
@@ -163,7 +165,6 @@ func (c *rawConnection) Start() {
 	go c.writerLoop()
 	go c.pingSender()
 	go c.pingReceiver()
-	go c.idGenerator()
 }
 
 func (c *rawConnection) ID() DeviceID {
@@ -182,7 +183,7 @@ func (c *rawConnection) Index(folder string, idx []FileInfo) error {
 	default:
 	}
 	c.idxMut.Lock()
-	c.send(-1, messageTypeIndex, &IndexMessage{
+	c.send(messageTypeIndex, &IndexMessage{
 		Folder: folder,
 		Files:  idx,
 	}, nil)
@@ -198,7 +199,7 @@ func (c *rawConnection) IndexUpdate(folder string, idx []FileInfo) error {
 	default:
 	}
 	c.idxMut.Lock()
-	c.send(-1, messageTypeIndexUpdate, &IndexMessage{
+	c.send(messageTypeIndexUpdate, &IndexMessage{
 		Folder: folder,
 		Files:  idx,
 	}, nil)
@@ -208,28 +209,21 @@ func (c *rawConnection) IndexUpdate(folder string, idx []FileInfo) error {
 
 // Request returns the bytes for the specified block after fetching them from the connected peer.
 func (c *rawConnection) Request(folder string, name string, offset int64, size int, hash []byte, fromTemporary bool) ([]byte, error) {
-	var id int
-	select {
-	case id = <-c.nextID:
-	case <-c.closed:
-		return nil, ErrClosed
-	}
-
-	var flags uint32
-
-	if fromTemporary {
-		flags |= FlagFromTemporary
-	}
+	c.nextIDMut.Lock()
+	id := c.nextID
+	c.nextID++
+	c.nextIDMut.Unlock()
 
 	c.awaitingMut.Lock()
-	if ch := c.awaiting[id]; ch != nil {
+	if _, ok := c.awaiting[id]; ok {
 		panic("id taken")
 	}
 	rc := make(chan asyncResult, 1)
 	c.awaiting[id] = rc
 	c.awaitingMut.Unlock()
 
-	ok := c.send(id, messageTypeRequest, &RequestMessage{
+	ok := c.send(messageTypeRequest, &RequestMessage{
+		ID:            id,
 		Folder:        folder,
 		Name:          name,
 		Offset:        offset,
@@ -250,7 +244,7 @@ func (c *rawConnection) Request(folder string, name string, offset int64, size i
 
 // ClusterConfig send the cluster configuration message to the peer and returns any error
 func (c *rawConnection) ClusterConfig(config ClusterConfigMessage) {
-	c.send(-1, messageTypeClusterConfig, &config, nil)
+	c.send(messageTypeClusterConfig, &config, nil)
 }
 
 func (c *rawConnection) Closed() bool {
@@ -264,21 +258,14 @@ func (c *rawConnection) Closed() bool {
 
 // DownloadProgress sends the progress updates for the files that are currently being downloaded.
 func (c *rawConnection) DownloadProgress(folder string, updates []FileDownloadProgressUpdate) {
-	c.send(-1, messageTypeDownloadProgress, &DownloadProgressMessage{
+	c.send(messageTypeDownloadProgress, &DownloadProgressMessage{
 		Folder:  folder,
 		Updates: updates,
 	}, nil)
 }
 
 func (c *rawConnection) ping() bool {
-	var id int
-	select {
-	case id = <-c.nextID:
-	case <-c.closed:
-		return false
-	}
-
-	return c.send(id, messageTypePing, nil, nil)
+	return c.send(messageTypePing, nil, nil)
 }
 
 func (c *rawConnection) readerLoop() (err error) {
@@ -329,13 +316,13 @@ func (c *rawConnection) readerLoop() (err error) {
 				return fmt.Errorf("protocol error: request message in state %d", state)
 			}
 			// Requests are handled asynchronously
-			go c.handleRequest(hdr.msgID, *msg)
+			go c.handleRequest(*msg)
 
 		case *ResponseMessage:
 			if state != stateReady {
 				return fmt.Errorf("protocol error: response message in state %d", state)
 			}
-			c.handleResponse(hdr.msgID, *msg)
+			c.handleResponse(*msg)
 
 		case *DownloadProgressMessage:
 			if state != stateReady {
@@ -494,7 +481,7 @@ func filterIndexMessageFiles(fs []FileInfo) []FileInfo {
 	return fs
 }
 
-func (c *rawConnection) handleRequest(msgID int, req RequestMessage) {
+func (c *rawConnection) handleRequest(req RequestMessage) {
 	size := int(req.Size)
 	usePool := size <= BlockSize
 
@@ -510,12 +497,14 @@ func (c *rawConnection) handleRequest(msgID int, req RequestMessage) {
 
 	err := c.receiver.Request(c.id, req.Folder, req.Name, int64(req.Offset), req.Hash, req.FromTemporary, buf)
 	if err != nil {
-		c.send(msgID, messageTypeResponse, &ResponseMessage{
+		c.send(messageTypeResponse, &ResponseMessage{
+			ID:   req.ID,
 			Data: nil,
 			Code: errorToCode(err),
 		}, done)
 	} else {
-		c.send(msgID, messageTypeResponse, &ResponseMessage{
+		c.send(messageTypeResponse, &ResponseMessage{
+			ID:   req.ID,
 			Data: buf,
 			Code: errorToCode(err),
 		}, done)
@@ -527,29 +516,19 @@ func (c *rawConnection) handleRequest(msgID int, req RequestMessage) {
 	}
 }
 
-func (c *rawConnection) handleResponse(msgID int, resp ResponseMessage) {
+func (c *rawConnection) handleResponse(resp ResponseMessage) {
 	c.awaitingMut.Lock()
-	if rc := c.awaiting[msgID]; rc != nil {
-		c.awaiting[msgID] = nil
+	if rc := c.awaiting[resp.ID]; rc != nil {
+		delete(c.awaiting, resp.ID)
 		rc <- asyncResult{resp.Data, codeToError(resp.Code)}
 		close(rc)
 	}
 	c.awaitingMut.Unlock()
 }
 
-func (c *rawConnection) send(msgID int, msgType MessageType, msg encodable, done chan struct{}) bool {
-	if msgID < 0 {
-		select {
-		case id := <-c.nextID:
-			msgID = id
-		case <-c.closed:
-			return false
-		}
-	}
-
+func (c *rawConnection) send(msgType MessageType, msg encodable, done chan struct{}) bool {
 	hdr := header{
 		version: 0,
-		msgID:   msgID,
 		msgType: msgType,
 	}
 
@@ -658,25 +637,13 @@ func (c *rawConnection) close(err error) {
 		for i, ch := range c.awaiting {
 			if ch != nil {
 				close(ch)
-				c.awaiting[i] = nil
+				delete(c.awaiting, i)
 			}
 		}
 		c.awaitingMut.Unlock()
 
 		go c.receiver.Close(c.id, err)
 	})
-}
-
-func (c *rawConnection) idGenerator() {
-	nextID := 0
-	for {
-		nextID = (nextID + 1) & 0xfff
-		select {
-		case c.nextID <- nextID:
-		case <-c.closed:
-			return
-		}
-	}
 }
 
 // The pingSender makes sure that we've sent a message within the last
