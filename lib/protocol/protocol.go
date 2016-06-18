@@ -4,7 +4,6 @@ package protocol
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -105,7 +104,13 @@ type rawConnection struct {
 	pool        sync.Pool
 	compression Compression
 
-	readerBuf []byte // used & reused by readMessage
+	// used by readMessage
+	readerBuf []byte
+
+	// used by the lz4 methods
+	lz4DecompBuf []byte
+	lz4CompBuf   []byte
+	lz4UncompBuf []byte
 }
 
 type asyncResult struct {
@@ -114,15 +119,8 @@ type asyncResult struct {
 }
 
 type hdrMsg struct {
-	hdr  header
-	msg  encodable
+	msg  Message
 	done chan struct{}
-}
-
-type encodable interface {
-	MarshalTo([]byte) (int, error)
-	ProtoSize() int
-	Unmarshal([]byte) error
 }
 
 const (
@@ -183,10 +181,10 @@ func (c *rawConnection) Index(folder string, idx []FileInfo) error {
 	default:
 	}
 	c.idxMut.Lock()
-	c.send(messageTypeIndex, &IndexMessage{
+	c.send(Message{Index: &IndexMessage{
 		Folder: folder,
 		Files:  idx,
-	}, nil)
+	}}, nil)
 	c.idxMut.Unlock()
 	return nil
 }
@@ -199,10 +197,10 @@ func (c *rawConnection) IndexUpdate(folder string, idx []FileInfo) error {
 	default:
 	}
 	c.idxMut.Lock()
-	c.send(messageTypeIndexUpdate, &IndexMessage{
+	c.send(Message{IndexUpdate: &IndexMessage{
 		Folder: folder,
 		Files:  idx,
-	}, nil)
+	}}, nil)
 	c.idxMut.Unlock()
 	return nil
 }
@@ -222,7 +220,7 @@ func (c *rawConnection) Request(folder string, name string, offset int64, size i
 	c.awaiting[id] = rc
 	c.awaitingMut.Unlock()
 
-	ok := c.send(messageTypeRequest, &RequestMessage{
+	ok := c.send(Message{Request: &RequestMessage{
 		ID:            id,
 		Folder:        folder,
 		Name:          name,
@@ -230,7 +228,7 @@ func (c *rawConnection) Request(folder string, name string, offset int64, size i
 		Size:          int32(size),
 		Hash:          hash,
 		FromTemporary: fromTemporary,
-	}, nil)
+	}}, nil)
 	if !ok {
 		return nil, ErrClosed
 	}
@@ -244,7 +242,7 @@ func (c *rawConnection) Request(folder string, name string, offset int64, size i
 
 // ClusterConfig send the cluster configuration message to the peer and returns any error
 func (c *rawConnection) ClusterConfig(config ClusterConfigMessage) {
-	c.send(messageTypeClusterConfig, &config, nil)
+	c.send(Message{ClusterConfig: &config}, nil)
 }
 
 func (c *rawConnection) Closed() bool {
@@ -258,14 +256,14 @@ func (c *rawConnection) Closed() bool {
 
 // DownloadProgress sends the progress updates for the files that are currently being downloaded.
 func (c *rawConnection) DownloadProgress(folder string, updates []FileDownloadProgressUpdate) {
-	c.send(messageTypeDownloadProgress, &DownloadProgressMessage{
+	c.send(Message{DownloadProgress: &DownloadProgressMessage{
 		Folder:  folder,
 		Updates: updates,
-	}, nil)
+	}}, nil)
 }
 
 func (c *rawConnection) ping() bool {
-	return c.send(messageTypePing, nil, nil)
+	return c.send(Message{Ping: &PingMessage{}}, nil)
 }
 
 func (c *rawConnection) readerLoop() (err error) {
@@ -281,168 +279,149 @@ func (c *rawConnection) readerLoop() (err error) {
 		default:
 		}
 
-		hdr, msg, err := c.readMessage()
+		msg, err := c.readMessage()
 		if err != nil {
 			return err
 		}
 
-		switch msg := msg.(type) {
-		case *ClusterConfigMessage:
+		switch {
+		case msg.ClusterConfig != nil:
+			l.Debugln("read ClusterConfig message")
 			if state != stateInitial {
 				return fmt.Errorf("protocol error: cluster config message in state %d", state)
 			}
-			go c.receiver.ClusterConfig(c.id, *msg)
+			go c.receiver.ClusterConfig(c.id, *msg.ClusterConfig)
 			state = stateReady
 
-		case *IndexMessage:
-			switch hdr.msgType {
-			case messageTypeIndex:
-				if state != stateReady {
-					return fmt.Errorf("protocol error: index message in state %d", state)
-				}
-				c.handleIndex(*msg)
-				state = stateReady
-
-			case messageTypeIndexUpdate:
-				if state != stateReady {
-					return fmt.Errorf("protocol error: index update message in state %d", state)
-				}
-				c.handleIndexUpdate(*msg)
-				state = stateReady
+		case msg.Index != nil:
+			l.Debugln("read Index message")
+			if state != stateReady {
+				return fmt.Errorf("protocol error: index message in state %d", state)
 			}
+			c.handleIndex(*msg.Index)
+			state = stateReady
 
-		case *RequestMessage:
+		case msg.IndexUpdate != nil:
+			l.Debugln("read IndexUpdate message")
+			if state != stateReady {
+				return fmt.Errorf("protocol error: index update message in state %d", state)
+			}
+			c.handleIndexUpdate(*msg.IndexUpdate)
+			state = stateReady
+
+		case msg.Request != nil:
+			l.Debugln("read Request message")
 			if state != stateReady {
 				return fmt.Errorf("protocol error: request message in state %d", state)
 			}
 			// Requests are handled asynchronously
-			go c.handleRequest(*msg)
+			go c.handleRequest(*msg.Request)
 
-		case *ResponseMessage:
+		case msg.Response != nil:
+			l.Debugln("read Response message")
 			if state != stateReady {
 				return fmt.Errorf("protocol error: response message in state %d", state)
 			}
-			c.handleResponse(*msg)
+			c.handleResponse(*msg.Response)
 
-		case *DownloadProgressMessage:
+		case msg.DownloadProgress != nil:
+			l.Debugln("read DownloadProgress message")
 			if state != stateReady {
 				return fmt.Errorf("protocol error: response message in state %d", state)
 			}
-			c.receiver.DownloadProgress(c.id, msg.Folder, msg.Updates)
+			c.receiver.DownloadProgress(c.id, msg.DownloadProgress.Folder, msg.DownloadProgress.Updates)
 
-		case *PingMessage:
+		case msg.Ping != nil:
+			l.Debugln("read Ping message")
 			if state != stateReady {
 				return fmt.Errorf("protocol error: ping message in state %d", state)
 			}
 			// Nothing
 
-		case *CloseMessage:
-			return errors.New(msg.Reason)
+		case msg.Close != nil:
+			l.Debugln("read Close message")
+			return errors.New(msg.Close.Reason)
 
 		default:
-			return fmt.Errorf("protocol error: %s: unknown message type %#x", c.id, hdr.msgType)
+			l.Debugf("read unknown message: %+v", msg)
+			return fmt.Errorf("protocol error: %s: unknown or empty message", c.id)
 		}
 	}
 }
 
-func (c *rawConnection) readMessage() (hdr header, msg encodable, err error) {
-	hdrBuf := make([]byte, 8)
-	_, err = io.ReadFull(c.cr, hdrBuf)
-	if err != nil {
-		return
+func (c *rawConnection) readMessage() (Message, error) {
+	// First comes a 32 bit length-of-header word
+
+	if len(c.readerBuf) < 4 {
+		c.readerBuf = make([]byte, 4)
 	}
 
-	hdr = decodeHeader(binary.BigEndian.Uint32(hdrBuf[:4]))
-	msglen := int(binary.BigEndian.Uint32(hdrBuf[4:]))
-
-	l.Debugf("read header %v (msglen=%d)", hdr, msglen)
-
-	if msglen > MaxMessageLen {
-		err = fmt.Errorf("message length %d exceeds maximum %d", msglen, MaxMessageLen)
-		return
+	if _, err := io.ReadFull(c.cr, c.readerBuf[:4]); err != nil {
+		return Message{}, fmt.Errorf("reading length word: %v", err)
 	}
 
-	if hdr.version != 0 {
-		err = fmt.Errorf("unknown protocol version 0x%x", hdr.version)
-		return
+	hdrLen := binary.BigEndian.Uint32(c.readerBuf)
+
+	// The the header message itself
+
+	if len(c.readerBuf) < int(hdrLen) {
+		c.readerBuf = make([]byte, hdrLen)
 	}
 
-	// c.readerBuf contains a buffer we can reuse. But once we've unmarshalled
-	// a message from the buffer we can't reuse it again as the unmarshalled
-	// message refers to the contents of the buffer. The only case we a buffer
-	// ends up in readerBuf for reuse is when the message is compressed, as we
-	// then decompress into a new buffer instead.
-
-	var msgBuf []byte
-	if cap(c.readerBuf) >= msglen {
-		// If we have a buffer ready in rdbuf we just use that.
-		msgBuf = c.readerBuf[:msglen]
-	} else {
-		// Otherwise we allocate a new buffer.
-		msgBuf = make([]byte, msglen)
+	if _, err := io.ReadFull(c.cr, c.readerBuf[:hdrLen]); err != nil {
+		return Message{}, fmt.Errorf("reading header: %v", err)
 	}
 
-	_, err = io.ReadFull(c.cr, msgBuf)
-	if err != nil {
-		return
+	var hdr Header
+	if err := hdr.Unmarshal(c.readerBuf[:hdrLen]); err != nil {
+		return Message{}, fmt.Errorf("unmarshalling header (%d bytes): %v", hdrLen, err)
 	}
 
+	l.Debugf("read header %+v (len=%d)", hdr, hdrLen)
+
+	if hdr.MessageLength > MaxMessageLen {
+		return Message{}, fmt.Errorf("message length %d exceeds maximum %d", hdr.MessageLength, MaxMessageLen)
+	}
+
+	// Then the actual message
+
+	if len(c.readerBuf) < int(hdr.MessageLength) {
+		c.readerBuf = make([]byte, hdr.MessageLength)
+	}
+
+	if _, err := io.ReadFull(c.cr, c.readerBuf[:hdr.MessageLength]); err != nil {
+		return Message{}, fmt.Errorf("reading message: %v", err)
+	}
+
+	msgBuf := c.readerBuf[:hdr.MessageLength]
 	l.Debugf("read %d bytes", len(msgBuf))
 
-	if hdr.compression && msglen > 0 {
-		// We're going to decompress msgBuf into a different newly allocated
-		// buffer, so keep msgBuf around for reuse on the next message.
-		c.readerBuf = msgBuf
+	switch hdr.Compression {
+	case MessageCompressionNone:
+		// Nothing
 
-		msgBuf, err = lz4.Decode(nil, msgBuf)
+	case MessageCompressionLZ4:
+		var err error
+		msgBuf, err = c.lz4Decompress(msgBuf, hdr.UncompressedLength)
 		if err != nil {
-			return
+			return Message{}, fmt.Errorf("decompressing message: %v", err)
 		}
+
 		l.Debugf("decompressed to %d bytes", len(msgBuf))
-	} else {
-		c.readerBuf = nil
-	}
-
-	if shouldDebug() {
-		if len(msgBuf) > 1024 {
-			l.Debugf("message data:\n%s", hex.Dump(msgBuf[:1024]))
-		} else {
-			l.Debugf("message data:\n%s", hex.Dump(msgBuf))
+		if len(msgBuf) != int(hdr.UncompressedLength) {
+			panic("bug: mismatch in decompressed length")
 		}
-	}
-
-	switch hdr.msgType {
-	case messageTypeIndex, messageTypeIndexUpdate:
-		msg = new(IndexMessage)
-
-	case messageTypeRequest:
-		msg = new(RequestMessage)
-
-	case messageTypeResponse:
-		msg = new(ResponseMessage)
-
-	case messageTypePing:
-		msg = new(PingMessage)
-
-	case messageTypeClusterConfig:
-		msg = new(ClusterConfigMessage)
-
-	case messageTypeClose:
-		msg = new(CloseMessage)
-
-	case messageTypeDownloadProgress:
-		msg = new(DownloadProgressMessage)
 
 	default:
-		err = fmt.Errorf("protocol error: %s: unknown message type %#x", c.id, hdr.msgType)
+		return Message{}, fmt.Errorf("unknown compression type %d", hdr.Compression)
 	}
 
-	if msg != nil {
-		// Unmarshal the actual type selected above, unless none was selected.
-		err = msg.Unmarshal(msgBuf)
+	var msg Message
+	if err := msg.Unmarshal(msgBuf); err != nil {
+		return Message{}, fmt.Errorf("unmarshalling message: %v", err)
 	}
 
-	return
+	return msg, nil
 }
 
 func (c *rawConnection) handleIndex(im IndexMessage) {
@@ -497,17 +476,17 @@ func (c *rawConnection) handleRequest(req RequestMessage) {
 
 	err := c.receiver.Request(c.id, req.Folder, req.Name, int64(req.Offset), req.Hash, req.FromTemporary, buf)
 	if err != nil {
-		c.send(messageTypeResponse, &ResponseMessage{
+		c.send(Message{Response: &ResponseMessage{
 			ID:   req.ID,
 			Data: nil,
 			Code: errorToCode(err),
-		}, done)
+		}}, done)
 	} else {
-		c.send(messageTypeResponse, &ResponseMessage{
+		c.send(Message{Response: &ResponseMessage{
 			ID:   req.ID,
 			Data: buf,
 			Code: errorToCode(err),
-		}, done)
+		}}, done)
 	}
 
 	if usePool {
@@ -526,14 +505,9 @@ func (c *rawConnection) handleResponse(resp ResponseMessage) {
 	c.awaitingMut.Unlock()
 }
 
-func (c *rawConnection) send(msgType MessageType, msg encodable, done chan struct{}) bool {
-	hdr := header{
-		version: 0,
-		msgType: msgType,
-	}
-
+func (c *rawConnection) send(msg Message, done chan struct{}) bool {
 	select {
-	case c.outbox <- hdrMsg{hdr, msg, done}:
+	case c.outbox <- hdrMsg{msg, done}:
 		return true
 	case <-c.closed:
 		return false
@@ -541,87 +515,80 @@ func (c *rawConnection) send(msgType MessageType, msg encodable, done chan struc
 }
 
 func (c *rawConnection) writerLoop() {
-	var msgBuf = make([]byte, 8) // buffer for wire format message, kept and reused
-	var uncBuf []byte            // buffer for uncompressed message, kept and reused
+	var msgBuf []byte             // the marshalled, uncompressed message
+	var hdrBuf []byte             // the marshalled header
+	var sendBuf = make([]byte, 4) // the full wire message (length word + header message + message)
+
 	for {
-		var tempBuf []byte
-		var err error
+		var wireMsgBuf []byte
+		var hdr Header
 
 		select {
 		case hm := <-c.outbox:
-			if hm.msg != nil {
-				// Uncompressed message in uncBuf
-				msgLen := hm.msg.ProtoSize()
-				if cap(uncBuf) >= msgLen {
-					uncBuf = uncBuf[:msgLen]
-				} else {
-					uncBuf = make([]byte, msgLen)
-				}
-				_, err = hm.msg.MarshalTo(uncBuf)
-				if hm.done != nil {
-					close(hm.done)
-				}
+			// Marshal the message into msgBuf
+			rawMsgLen := hm.msg.ProtoSize()
+			if len(msgBuf) < rawMsgLen {
+				msgBuf = make([]byte, rawMsgLen)
+			}
+			if _, err := hm.msg.MarshalTo(msgBuf); err != nil {
+				c.close(err)
+				return
+			}
+
+			// Decide if we're going to use compression or not
+			compress := false
+			switch c.compression {
+			case CompressAlways:
+				// Use compression for large enough messages
+				compress = rawMsgLen >= compressionThreshold
+			case CompressMetadata:
+				// Compress if it's large enough and not a response message
+				compress = rawMsgLen >= compressionThreshold && hm.msg.Response == nil
+			}
+
+			if compress {
+				// Write compressed data to compBuf, then set wireMsgBuf to
+				// point at the compressed data.
+				var err error
+				wireMsgBuf, err = c.lz4Compress(msgBuf[:rawMsgLen])
 				if err != nil {
 					c.close(err)
 					return
 				}
-
-				compress := false
-				switch c.compression {
-				case CompressAlways:
-					compress = true
-				case CompressMetadata:
-					compress = hm.hdr.msgType != messageTypeResponse
-				}
-
-				if compress && len(uncBuf) >= compressionThreshold {
-					// Use compression for large messages
-					hm.hdr.compression = true
-
-					// Make sure we have enough space for the compressed message plus header in msgBug
-					msgBuf = msgBuf[:cap(msgBuf)]
-					if maxLen := lz4.CompressBound(len(uncBuf)) + 8; maxLen > len(msgBuf) {
-						msgBuf = make([]byte, maxLen)
-					}
-
-					// Compressed is written to msgBuf, we keep tb for the length only
-					tempBuf, err = lz4.Encode(msgBuf[8:], uncBuf)
-					binary.BigEndian.PutUint32(msgBuf[4:8], uint32(len(tempBuf)))
-					msgBuf = msgBuf[0 : len(tempBuf)+8]
-
-					l.Debugf("write compressed message; %v (len=%d)", hm.hdr, len(tempBuf))
-				} else {
-					// No point in compressing very short messages
-					hm.hdr.compression = false
-
-					msgBuf = msgBuf[:cap(msgBuf)]
-					if l := len(uncBuf) + 8; l > len(msgBuf) {
-						msgBuf = make([]byte, l)
-					}
-
-					binary.BigEndian.PutUint32(msgBuf[4:8], uint32(len(uncBuf)))
-					msgBuf = msgBuf[0 : len(uncBuf)+8]
-					copy(msgBuf[8:], uncBuf)
-
-					l.Debugf("write uncompressed message; %v (len=%d)", hm.hdr, len(uncBuf))
-				}
+				hdr.Compression = MessageCompressionLZ4
+				hdr.UncompressedLength = int32(rawMsgLen)
 			} else {
-				l.Debugf("write empty message; %v", hm.hdr)
-				binary.BigEndian.PutUint32(msgBuf[4:8], 0)
-				msgBuf = msgBuf[:8]
+				// Set wireMsgBuf to point directly to the uncompressed data.
+				wireMsgBuf = msgBuf[:rawMsgLen]
+				hdr.Compression = MessageCompressionNone
+				hdr.UncompressedLength = 0
 			}
 
-			binary.BigEndian.PutUint32(msgBuf[0:4], encodeHeader(hm.hdr))
-
-			if err == nil {
-				var n int
-				n, err = c.cw.Write(msgBuf)
-				l.Debugf("wrote %d bytes on the wire", n)
+			// Fix up the header and marshal it to hdrBuf
+			hdr.MessageLength = int32(len(wireMsgBuf))
+			hdrMsgLen := hdr.ProtoSize()
+			if len(hdrBuf) < hdrMsgLen {
+				hdrBuf = make([]byte, hdrMsgLen)
 			}
+			if _, err := hdr.MarshalTo(hdrBuf); err != nil {
+				c.close(err)
+				return
+			}
+
+			// Copy all of it to sendbuf now that we know the relative sizes
+			sendBuf = sendBuf[:4]
+			binary.BigEndian.PutUint32(sendBuf, uint32(hdrMsgLen))
+			sendBuf = append(sendBuf, hdrBuf[:hdrMsgLen]...)
+			sendBuf = append(sendBuf, wireMsgBuf...)
+
+			// Throw it on the wire
+			n, err := c.cw.Write(sendBuf)
+			l.Debugf("wrote %d bytes on the wire (4 bytes length, %d bytes header, %d bytes message, %d bytes uncompressed), err=%v", n, hdrMsgLen, len(wireMsgBuf), rawMsgLen, err)
 			if err != nil {
 				c.close(err)
 				return
 			}
+
 		case <-c.closed:
 			return
 		}
@@ -707,4 +674,36 @@ func (c *rawConnection) Statistics() Statistics {
 		InBytesTotal:  c.cr.Tot(),
 		OutBytesTotal: c.cw.Tot(),
 	}
+}
+
+// The LZ4 package that we use is special in that it prefixes the compressed
+// data with an uint32 containing the uncompressed length (and in little
+// endian byte order no less). It expects that field to be there on
+// decompression as well. We don't want that because it's nonstandard so we
+// jump through some hoops here to get rid of it. At some point we may want
+// to make a pull request to tweak the API as the LZ4 package could equally
+// well provide the API we need as well.
+
+func (c *rawConnection) lz4Compress(src []byte) ([]byte, error) {
+	var err error
+	c.lz4CompBuf, err = lz4.Encode(c.lz4CompBuf, src)
+	if err != nil {
+		return nil, err
+	}
+	return c.lz4CompBuf[4:], nil
+}
+
+func (c *rawConnection) lz4Decompress(src []byte, uncompressedSize int32) ([]byte, error) {
+	if len(c.lz4DecompBuf) < 4+len(src) {
+		c.lz4DecompBuf = make([]byte, 4+len(src))
+	}
+	// LittleEndian because ... I really have no idea.
+	binary.LittleEndian.PutUint32(c.lz4DecompBuf, uint32(uncompressedSize))
+	copy(c.lz4DecompBuf[4:], src)
+	var err error
+	c.lz4UncompBuf, err = lz4.Decode(c.lz4UncompBuf, c.lz4DecompBuf[:4+len(src)])
+	if err != nil {
+		return nil, err
+	}
+	return c.lz4UncompBuf, nil
 }

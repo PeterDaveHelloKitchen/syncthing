@@ -20,20 +20,18 @@ message HelloMessage {
     string client_version = 3;
 }
 
-// Message types
+// Wrapping stuff
 
-enum MessageType {
-    CLUSTER_CONFIG    = 0 [(gogoproto.enumvalue_customname) = "messageTypeClusterConfig"];
-    INDEX             = 1 [(gogoproto.enumvalue_customname) = "messageTypeIndex"];
-    INDEX_UPDATE      = 2 [(gogoproto.enumvalue_customname) = "messageTypeIndexUpdate"];
-    REQUEST           = 3 [(gogoproto.enumvalue_customname) = "messageTypeRequest"];
-    RESPONSE          = 4 [(gogoproto.enumvalue_customname) = "messageTypeResponse"];
-    DOWNLOAD_PROGRESS = 5 [(gogoproto.enumvalue_customname) = "messageTypeDownloadProgress"];
-    PING              = 6 [(gogoproto.enumvalue_customname) = "messageTypePing"];
-    CLOSE             = 7 [(gogoproto.enumvalue_customname) = "messageTypeClose"];
+message Header {
+    int32              message_length      = 1;
+    MessageCompression compression         = 2;
+    int32              uncompressed_length = 3; // only set when compression != NONE
 }
 
-// Uber
+enum MessageCompression {
+    NONE = 0 [(gogoproto.enumvalue_customname) = "MessageCompressionNone"];
+    LZ4  = 1 [(gogoproto.enumvalue_customname) = "MessageCompressionLZ4"];
+}
 
 message Message {
     ClusterConfigMessage    cluster_config    = 1;
@@ -46,7 +44,7 @@ message Message {
     CloseMessage            close             = 8;
 }
 
-// Cluster Config (Type = 0)
+// Cluster Config
 
 message ClusterConfigMessage {
     repeated Folder folders = 1 [(gogoproto.nullable) = false];
@@ -79,7 +77,7 @@ enum Compression {
     ALWAYS   = 2 [(gogoproto.enumvalue_customname) = "CompressAlways"];
 }
 
-// Index (Type = 1) and Index Update (Type = 2)
+// Index and Index Update
 
 message IndexMessage {
     string            folder = 1;
@@ -126,7 +124,7 @@ message Counter {
     uint64 value = 2;
 }
 
-// Request (Type = 3)
+// Request
 
 message RequestMessage {
     int32  id             = 1 [(gogoproto.customname) = "ID"];
@@ -138,7 +136,7 @@ message RequestMessage {
     bool   from_temporary = 7;
 }
 
-// Response (Type = 4)
+// Response
 
 message ResponseMessage {
     int32     id   = 7 [(gogoproto.customname) = "ID"];
@@ -153,7 +151,7 @@ enum ErrorCode {
     INVALID_FILE = 3 [(gogoproto.enumvalue_customname) = "ErrorCodeInvalidFile"];
 }
 
-// DownloadProgress (Type = 5)
+// DownloadProgress
 
 message DownloadProgressMessage {
     string                              folder  = 1;
@@ -172,12 +170,12 @@ enum FileDownloadProgressUpdateType {
     FORGET = 1 [(gogoproto.enumvalue_customname) = "UpdateTypeForget"];
 }
 
-// Ping (Type = 6)
+// Ping
 
 message PingMessage {
 }
 
-// Close (Type = 7)
+// Close
 
 message CloseMessage {
     string reason = 1;

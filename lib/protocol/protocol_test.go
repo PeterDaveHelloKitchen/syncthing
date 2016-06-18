@@ -4,7 +4,6 @@ package protocol
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +12,8 @@ import (
 	"testing"
 	"testing/quick"
 	"time"
+
+	"github.com/syncthing/syncthing/lib/rand"
 )
 
 var (
@@ -20,64 +21,6 @@ var (
 	c1ID     = NewDeviceID([]byte{2})
 	quickCfg = &quick.Config{}
 )
-
-func TestHeaderEncodeDecode(t *testing.T) {
-	f := func(ver, id int, typ MessageType) bool {
-		ver = int(uint(ver) % 16)
-		id = int(uint(id) % 4096)
-		typ = MessageType(uint(typ) % 256)
-		h0 := header{version: ver, msgID: id, msgType: typ}
-		h1 := decodeHeader(encodeHeader(h0))
-		return h0 == h1
-	}
-	if err := quick.Check(f, nil); err != nil {
-		t.Error(err)
-	}
-}
-
-func TestHeaderMarshalUnmarshal(t *testing.T) {
-	f := func(ver, id int, typ MessageType) bool {
-		ver = int(uint(ver) % 16)
-		id = int(uint(id) % 4096)
-		typ = MessageType(uint(typ) % 256)
-		buf := make([]byte, 4)
-
-		h0 := header{version: ver, msgID: id, msgType: typ}
-		h0.MarshalTo(buf)
-
-		var h1 header
-		h1.Unmarshal(buf)
-		return h0 == h1
-	}
-	if err := quick.Check(f, nil); err != nil {
-		t.Error(err)
-	}
-}
-
-func TestHeaderLayout(t *testing.T) {
-	var e, a uint32
-
-	// Version are the first four bits
-	e = 0xf0000000
-	a = encodeHeader(header{version: 0xf})
-	if a != e {
-		t.Errorf("Header layout incorrect; %08x != %08x", a, e)
-	}
-
-	// Message ID are the following 12 bits
-	e = 0x0fff0000
-	a = encodeHeader(header{msgID: 0xfff})
-	if a != e {
-		t.Errorf("Header layout incorrect; %08x != %08x", a, e)
-	}
-
-	// Type are the last 8 bits before reserved
-	e = 0x0000ff00
-	a = encodeHeader(header{msgType: 0xff})
-	if a != e {
-		t.Errorf("Header layout incorrect; %08x != %08x", a, e)
-	}
-}
 
 func TestPing(t *testing.T) {
 	ar, aw := io.Pipe()
@@ -95,56 +38,6 @@ func TestPing(t *testing.T) {
 	}
 	if ok := c1.ping(); !ok {
 		t.Error("c1 ping failed")
-	}
-}
-
-func TestVersionErr(t *testing.T) {
-	m0 := newTestModel()
-	m1 := newTestModel()
-
-	ar, aw := io.Pipe()
-	br, bw := io.Pipe()
-
-	c0 := NewConnection(c0ID, ar, bw, m0, "name", CompressAlways).(wireFormatConnection).Connection.(*rawConnection)
-	c0.Start()
-	c1 := NewConnection(c1ID, br, aw, m1, "name", CompressAlways)
-	c1.Start()
-	c0.ClusterConfig(ClusterConfigMessage{})
-	c1.ClusterConfig(ClusterConfigMessage{})
-
-	timeoutWriteHeader(c0.cw, header{
-		version: 2, // higher than supported
-		msgID:   0,
-		msgType: messageTypeIndex,
-	})
-
-	if err := m1.closedError(); err == nil || !strings.Contains(err.Error(), "unknown protocol version") {
-		t.Error("Connection should close due to unknown version, not", err)
-	}
-}
-
-func TestTypeErr(t *testing.T) {
-	m0 := newTestModel()
-	m1 := newTestModel()
-
-	ar, aw := io.Pipe()
-	br, bw := io.Pipe()
-
-	c0 := NewConnection(c0ID, ar, bw, m0, "name", CompressAlways).(wireFormatConnection).Connection.(*rawConnection)
-	c0.Start()
-	c1 := NewConnection(c1ID, br, aw, m1, "name", CompressAlways)
-	c1.Start()
-	c0.ClusterConfig(ClusterConfigMessage{})
-	c1.ClusterConfig(ClusterConfigMessage{})
-
-	timeoutWriteHeader(c0.cw, header{
-		version: 0,
-		msgID:   0,
-		msgType: 42, // unknown type
-	})
-
-	if err := m1.closedError(); err == nil || !strings.Contains(err.Error(), "unknown message type") {
-		t.Error("Connection should close due to unknown message type, not", err)
 	}
 }
 
@@ -313,28 +206,6 @@ func testMarshal(t *testing.T, prefix string, m1, m2 message) bool {
 	return true
 }
 
-func timeoutWriteHeader(w io.Writer, hdr header) {
-	// This tries to write a message header to w, but times out after a while.
-	// This is useful because in testing, with a PipeWriter, it will block
-	// forever if the other side isn't reading any more. On the other hand we
-	// can't just "go" it into the background, because if the other side is
-	// still there we should wait for the write to complete. Yay.
-
-	var buf [8]byte // header and message length
-	binary.BigEndian.PutUint32(buf[:], encodeHeader(hdr))
-	binary.BigEndian.PutUint32(buf[4:], 0) // zero message length, explicitly
-
-	done := make(chan struct{})
-	go func() {
-		w.Write(buf[:])
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(250 * time.Millisecond):
-	}
-}
-
 func TestMarshalledIndexMessageSize(t *testing.T) {
 	// We should be able to handle a 1 TiB file without
 	// blowing the default max message size.
@@ -374,5 +245,35 @@ func TestMarshalledIndexMessageSize(t *testing.T) {
 	msgSize := idx.ProtoSize()
 	if msgSize > maxMessageSize {
 		t.Errorf("Message size %d bytes is larger than max %d", msgSize, maxMessageSize)
+	}
+}
+
+func TestLZ4Compression(t *testing.T) {
+	c := new(rawConnection)
+
+	for i := 0; i < 10; i++ {
+		dataLen := 150 + rand.Intn(150)
+		data := make([]byte, dataLen)
+		_, err := io.ReadFull(rand.Reader, data[100:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		comp, err := c.lz4Compress(data)
+		if err != nil {
+			t.Errorf("compressing %d bytes: %v", dataLen, err)
+			continue
+		}
+		res, err := c.lz4Decompress(comp, int32(dataLen))
+		if err != nil {
+			t.Errorf("decompressing %d bytes to %d: %v", len(comp), dataLen, err)
+			continue
+		}
+		if len(res) != len(data) {
+			t.Errorf("Incorrect len %d != expected %d", len(res), len(data))
+		}
+		if !bytes.Equal(data, res) {
+			t.Error("Incorrect decompressed data")
+		}
+		t.Logf("OK #%d, %d -> %d -> %d", i, dataLen, len(comp), dataLen)
 	}
 }
