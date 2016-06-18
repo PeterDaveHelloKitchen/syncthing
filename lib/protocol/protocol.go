@@ -111,6 +111,9 @@ type rawConnection struct {
 	lz4DecompBuf []byte
 	lz4CompBuf   []byte
 	lz4UncompBuf []byte
+
+	// used by compressMessage and writeMessage
+	writeBuf []byte
 }
 
 type asyncResult struct {
@@ -350,7 +353,7 @@ func (c *rawConnection) readerLoop() (err error) {
 }
 
 func (c *rawConnection) readMessage() (Message, error) {
-	// First comes a 32 bit length-of-header word
+	// First comes a 32 bit length-of-message word
 
 	if len(c.readerBuf) < 4 {
 		c.readerBuf = make([]byte, 4)
@@ -360,65 +363,32 @@ func (c *rawConnection) readMessage() (Message, error) {
 		return Message{}, fmt.Errorf("reading length word: %v", err)
 	}
 
-	hdrLen := binary.BigEndian.Uint32(c.readerBuf)
-
-	// The the header message itself
-
-	if len(c.readerBuf) < int(hdrLen) {
-		c.readerBuf = make([]byte, hdrLen)
-	}
-
-	if _, err := io.ReadFull(c.cr, c.readerBuf[:hdrLen]); err != nil {
-		return Message{}, fmt.Errorf("reading header: %v", err)
-	}
-
-	var hdr Header
-	if err := hdr.Unmarshal(c.readerBuf[:hdrLen]); err != nil {
-		return Message{}, fmt.Errorf("unmarshalling header (%d bytes): %v", hdrLen, err)
-	}
-
-	l.Debugf("read header %+v (len=%d)", hdr, hdrLen)
-
-	if hdr.MessageLength > MaxMessageLen {
-		return Message{}, fmt.Errorf("message length %d exceeds maximum %d", hdr.MessageLength, MaxMessageLen)
-	}
+	msgLen := binary.BigEndian.Uint32(c.readerBuf)
 
 	// Then the actual message
 
-	if len(c.readerBuf) < int(hdr.MessageLength) {
-		c.readerBuf = make([]byte, hdr.MessageLength)
+	if len(c.readerBuf) < int(msgLen) {
+		c.readerBuf = make([]byte, msgLen)
 	}
 
-	if _, err := io.ReadFull(c.cr, c.readerBuf[:hdr.MessageLength]); err != nil {
+	if _, err := io.ReadFull(c.cr, c.readerBuf[:msgLen]); err != nil {
 		return Message{}, fmt.Errorf("reading message: %v", err)
 	}
 
-	msgBuf := c.readerBuf[:hdr.MessageLength]
-	l.Debugf("read %d bytes", len(msgBuf))
-
-	switch hdr.Compression {
-	case MessageCompressionNone:
-		// Nothing
-
-	case MessageCompressionLZ4:
-		var err error
-		msgBuf, err = c.lz4Decompress(msgBuf, hdr.UncompressedLength)
-		if err != nil {
-			return Message{}, fmt.Errorf("decompressing message: %v", err)
-		}
-
-		l.Debugf("decompressed to %d bytes", len(msgBuf))
-		if len(msgBuf) != int(hdr.UncompressedLength) {
-			panic("bug: mismatch in decompressed length")
-		}
-
-	default:
-		return Message{}, fmt.Errorf("unknown compression type %d", hdr.Compression)
+	var msg Message
+	if err := msg.Unmarshal(c.readerBuf[:msgLen]); err != nil {
+		return Message{}, fmt.Errorf("unmarshalling message: %v", err)
 	}
 
-	var msg Message
-	if err := msg.Unmarshal(msgBuf); err != nil {
-		return Message{}, fmt.Errorf("unmarshalling message: %v", err)
+	if msg.Compressed != nil {
+		buf, err := c.lz4Decompress(msg.Compressed.Data, msg.Compressed.UncompressedLength)
+		if err != nil {
+			return Message{}, fmt.Errorf("decompressing message (%d -> %d): %v", len(msg.Compressed.Data), msg.Compressed.UncompressedLength, err)
+		}
+
+		if err := msg.Unmarshal(buf); err != nil {
+			return Message{}, fmt.Errorf("unmarshalling compressed message: %v", err)
+		}
 	}
 
 	return msg, nil
@@ -515,84 +485,89 @@ func (c *rawConnection) send(msg Message, done chan struct{}) bool {
 }
 
 func (c *rawConnection) writerLoop() {
-	var msgBuf []byte             // the marshalled, uncompressed message
-	var hdrBuf []byte             // the marshalled header
-	var sendBuf = make([]byte, 4) // the full wire message (length word + header message + message)
-
 	for {
-		var wireMsgBuf []byte
-		var hdr Header
-
 		select {
 		case hm := <-c.outbox:
-			// Marshal the message into msgBuf
-			rawMsgLen := hm.msg.ProtoSize()
-			if len(msgBuf) < rawMsgLen {
-				msgBuf = make([]byte, rawMsgLen)
-			}
-			if _, err := hm.msg.MarshalTo(msgBuf); err != nil {
-				c.close(err)
-				return
-			}
-
-			// Decide if we're going to use compression or not
-			compress := false
-			switch c.compression {
-			case CompressAlways:
-				// Use compression for large enough messages
-				compress = rawMsgLen >= compressionThreshold
-			case CompressMetadata:
-				// Compress if it's large enough and not a response message
-				compress = rawMsgLen >= compressionThreshold && hm.msg.Response == nil
-			}
-
-			if compress {
-				// Write compressed data to compBuf, then set wireMsgBuf to
-				// point at the compressed data.
-				var err error
-				wireMsgBuf, err = c.lz4Compress(msgBuf[:rawMsgLen])
-				if err != nil {
-					c.close(err)
-					return
-				}
-				hdr.Compression = MessageCompressionLZ4
-				hdr.UncompressedLength = int32(rawMsgLen)
-			} else {
-				// Set wireMsgBuf to point directly to the uncompressed data.
-				wireMsgBuf = msgBuf[:rawMsgLen]
-				hdr.Compression = MessageCompressionNone
-				hdr.UncompressedLength = 0
-			}
-
-			// Fix up the header and marshal it to hdrBuf
-			hdr.MessageLength = int32(len(wireMsgBuf))
-			hdrMsgLen := hdr.ProtoSize()
-			if len(hdrBuf) < hdrMsgLen {
-				hdrBuf = make([]byte, hdrMsgLen)
-			}
-			if _, err := hdr.MarshalTo(hdrBuf); err != nil {
-				c.close(err)
-				return
-			}
-
-			// Copy all of it to sendbuf now that we know the relative sizes
-			sendBuf = sendBuf[:4]
-			binary.BigEndian.PutUint32(sendBuf, uint32(hdrMsgLen))
-			sendBuf = append(sendBuf, hdrBuf[:hdrMsgLen]...)
-			sendBuf = append(sendBuf, wireMsgBuf...)
-
-			// Throw it on the wire
-			n, err := c.cw.Write(sendBuf)
-			l.Debugf("wrote %d bytes on the wire (4 bytes length, %d bytes header, %d bytes message, %d bytes uncompressed), err=%v", n, hdrMsgLen, len(wireMsgBuf), rawMsgLen, err)
+			msg, err := c.maybeCompressMessage(hm.msg)
 			if err != nil {
 				c.close(err)
 				return
+			}
+			err = c.writeMessage(msg)
+			if err != nil {
+				c.close(err)
+				return
+			}
+			if hm.done != nil {
+				close(hm.done)
 			}
 
 		case <-c.closed:
 			return
 		}
 	}
+}
+
+func (c *rawConnection) maybeCompressMessage(msg Message) (Message, error) {
+	if msg.Compressed != nil {
+		panic("bug: cannot compress compressed message")
+	}
+
+	if c.compression == CompressNever {
+		return msg, nil
+	}
+
+	// Decide if we're going to use compression or not
+	rawMsgLen := msg.ProtoSize()
+	compress := false
+	switch c.compression {
+	case CompressAlways:
+		// Use compression for large enough messages
+		compress = rawMsgLen >= compressionThreshold
+	case CompressMetadata:
+		// Compress if it's large enough and not a response message
+		compress = rawMsgLen >= compressionThreshold && msg.Response == nil
+	}
+
+	if !compress {
+		return msg, nil
+	}
+
+	if len(c.writeBuf) < rawMsgLen {
+		c.writeBuf = make([]byte, rawMsgLen)
+	}
+	if _, err := msg.MarshalTo(c.writeBuf); err != nil {
+		return Message{}, err
+	}
+
+	buf, err := c.lz4Compress(c.writeBuf[:rawMsgLen])
+	if err != nil {
+		return Message{}, err
+	}
+	msg = Message{
+		Compressed: &CompressedMessage{
+			Data:               buf,
+			UncompressedLength: int32(rawMsgLen),
+		},
+	}
+	return msg, nil
+}
+
+func (c *rawConnection) writeMessage(msg Message) error {
+	// Marshal the message into msgBuf
+	rawMsgLen := msg.ProtoSize()
+	if len(c.writeBuf) < 4+rawMsgLen {
+		c.writeBuf = make([]byte, 4+rawMsgLen)
+	}
+	binary.BigEndian.PutUint32(c.writeBuf, uint32(rawMsgLen))
+	if _, err := msg.MarshalTo(c.writeBuf[4:]); err != nil {
+		return err
+	}
+
+	// Throw it on the wire
+	n, err := c.cw.Write(c.writeBuf[:4+rawMsgLen])
+	l.Debugf("wrote %d bytes on the wire (4 bytes length, %d bytes message), err=%v", n, rawMsgLen, err)
+	return err
 }
 
 func (c *rawConnection) close(err error) {

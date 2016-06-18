@@ -22,17 +22,6 @@ message Hello {
 
 // Wrapping stuff
 
-message Header {
-    int32              message_length      = 1;
-    MessageCompression compression         = 2;
-    int32              uncompressed_length = 3; // only set when compression != NONE
-}
-
-enum MessageCompression {
-    NONE = 0 [(gogoproto.enumvalue_customname) = "MessageCompressionNone"];
-    LZ4  = 1 [(gogoproto.enumvalue_customname) = "MessageCompressionLZ4"];
-}
-
 message Message {
     ClusterConfig    cluster_config    = 1;
     Index            index             = 2;
@@ -42,6 +31,13 @@ message Message {
     DownloadProgress download_progress = 6;
     Ping             ping              = 7;
     Close            close             = 8;
+
+    CompressedMessage compressed = 16;
+}
+
+message CompressedMessage {
+    bytes data                = 1;
+    int32 uncompressed_length = 2;
 }
 
 // Cluster Config
