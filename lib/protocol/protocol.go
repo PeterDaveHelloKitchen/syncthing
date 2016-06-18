@@ -62,7 +62,7 @@ type Model interface {
 	// A request was made by the peer device
 	Request(deviceID DeviceID, folder string, name string, offset int64, hash []byte, fromTemporary bool, buf []byte) error
 	// A cluster configuration message was received
-	ClusterConfig(deviceID DeviceID, config ClusterConfigMessage)
+	ClusterConfig(deviceID DeviceID, config ClusterConfig)
 	// The peer device closed the connection
 	Close(deviceID DeviceID, err error)
 	// The peer device sent progress updates for the files it is currently downloading
@@ -76,7 +76,7 @@ type Connection interface {
 	Index(folder string, files []FileInfo) error
 	IndexUpdate(folder string, files []FileInfo) error
 	Request(folder string, name string, offset int64, size int, hash []byte, fromTemporary bool) ([]byte, error)
-	ClusterConfig(config ClusterConfigMessage)
+	ClusterConfig(config ClusterConfig)
 	DownloadProgress(folder string, updates []FileDownloadProgressUpdate)
 	Statistics() Statistics
 	Closed() bool
@@ -181,7 +181,7 @@ func (c *rawConnection) Index(folder string, idx []FileInfo) error {
 	default:
 	}
 	c.idxMut.Lock()
-	c.send(Message{Index: &IndexMessage{
+	c.send(Message{Index: &Index{
 		Folder: folder,
 		Files:  idx,
 	}}, nil)
@@ -197,7 +197,7 @@ func (c *rawConnection) IndexUpdate(folder string, idx []FileInfo) error {
 	default:
 	}
 	c.idxMut.Lock()
-	c.send(Message{IndexUpdate: &IndexMessage{
+	c.send(Message{IndexUpdate: &Index{
 		Folder: folder,
 		Files:  idx,
 	}}, nil)
@@ -220,7 +220,7 @@ func (c *rawConnection) Request(folder string, name string, offset int64, size i
 	c.awaiting[id] = rc
 	c.awaitingMut.Unlock()
 
-	ok := c.send(Message{Request: &RequestMessage{
+	ok := c.send(Message{Request: &Request{
 		ID:            id,
 		Folder:        folder,
 		Name:          name,
@@ -241,7 +241,7 @@ func (c *rawConnection) Request(folder string, name string, offset int64, size i
 }
 
 // ClusterConfig send the cluster configuration message to the peer and returns any error
-func (c *rawConnection) ClusterConfig(config ClusterConfigMessage) {
+func (c *rawConnection) ClusterConfig(config ClusterConfig) {
 	c.send(Message{ClusterConfig: &config}, nil)
 }
 
@@ -256,14 +256,14 @@ func (c *rawConnection) Closed() bool {
 
 // DownloadProgress sends the progress updates for the files that are currently being downloaded.
 func (c *rawConnection) DownloadProgress(folder string, updates []FileDownloadProgressUpdate) {
-	c.send(Message{DownloadProgress: &DownloadProgressMessage{
+	c.send(Message{DownloadProgress: &DownloadProgress{
 		Folder:  folder,
 		Updates: updates,
 	}}, nil)
 }
 
 func (c *rawConnection) ping() bool {
-	return c.send(Message{Ping: &PingMessage{}}, nil)
+	return c.send(Message{Ping: &Ping{}}, nil)
 }
 
 func (c *rawConnection) readerLoop() (err error) {
@@ -424,12 +424,12 @@ func (c *rawConnection) readMessage() (Message, error) {
 	return msg, nil
 }
 
-func (c *rawConnection) handleIndex(im IndexMessage) {
+func (c *rawConnection) handleIndex(im Index) {
 	l.Debugf("Index(%v, %v, %d file)", c.id, im.Folder, len(im.Files))
 	c.receiver.Index(c.id, im.Folder, filterIndexMessageFiles(im.Files))
 }
 
-func (c *rawConnection) handleIndexUpdate(im IndexMessage) {
+func (c *rawConnection) handleIndexUpdate(im Index) {
 	l.Debugf("queueing IndexUpdate(%v, %v, %d files)", c.id, im.Folder, len(im.Files))
 	c.receiver.IndexUpdate(c.id, im.Folder, filterIndexMessageFiles(im.Files))
 }
@@ -460,7 +460,7 @@ func filterIndexMessageFiles(fs []FileInfo) []FileInfo {
 	return fs
 }
 
-func (c *rawConnection) handleRequest(req RequestMessage) {
+func (c *rawConnection) handleRequest(req Request) {
 	size := int(req.Size)
 	usePool := size <= BlockSize
 
@@ -476,13 +476,13 @@ func (c *rawConnection) handleRequest(req RequestMessage) {
 
 	err := c.receiver.Request(c.id, req.Folder, req.Name, int64(req.Offset), req.Hash, req.FromTemporary, buf)
 	if err != nil {
-		c.send(Message{Response: &ResponseMessage{
+		c.send(Message{Response: &Response{
 			ID:   req.ID,
 			Data: nil,
 			Code: errorToCode(err),
 		}}, done)
 	} else {
-		c.send(Message{Response: &ResponseMessage{
+		c.send(Message{Response: &Response{
 			ID:   req.ID,
 			Data: buf,
 			Code: errorToCode(err),
@@ -495,7 +495,7 @@ func (c *rawConnection) handleRequest(req RequestMessage) {
 	}
 }
 
-func (c *rawConnection) handleResponse(resp ResponseMessage) {
+func (c *rawConnection) handleResponse(resp Response) {
 	c.awaitingMut.Lock()
 	if rc := c.awaiting[resp.ID]; rc != nil {
 		delete(c.awaiting, resp.ID)

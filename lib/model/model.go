@@ -93,7 +93,7 @@ type Model struct {
 
 	conn              map[protocol.DeviceID]connections.Connection
 	helloMessages     map[protocol.DeviceID]protocol.HelloResult
-	deviceClusterConf map[protocol.DeviceID]protocol.ClusterConfigMessage
+	deviceClusterConf map[protocol.DeviceID]protocol.ClusterConfig
 	devicePaused      map[protocol.DeviceID]bool
 	deviceDownloads   map[protocol.DeviceID]*deviceDownloadState
 	pmut              sync.RWMutex // protects the above
@@ -138,7 +138,7 @@ func NewModel(cfg *config.Wrapper, id protocol.DeviceID, deviceName, clientName,
 		folderStatRefs:     make(map[string]*stats.FolderStatisticsReference),
 		conn:               make(map[protocol.DeviceID]connections.Connection),
 		helloMessages:      make(map[protocol.DeviceID]protocol.HelloResult),
-		deviceClusterConf:  make(map[protocol.DeviceID]protocol.ClusterConfigMessage),
+		deviceClusterConf:  make(map[protocol.DeviceID]protocol.ClusterConfig),
 		devicePaused:       make(map[protocol.DeviceID]bool),
 		deviceDownloads:    make(map[protocol.DeviceID]*deviceDownloadState),
 		fmut:               sync.NewRWMutex(),
@@ -610,7 +610,7 @@ func (m *Model) folderSharedWithUnlocked(folder string, deviceID protocol.Device
 	return false
 }
 
-func (m *Model) ClusterConfig(deviceID protocol.DeviceID, cm protocol.ClusterConfigMessage) {
+func (m *Model) ClusterConfig(deviceID protocol.DeviceID, cm protocol.ClusterConfig) {
 	// Check the peer device's announced folders against our own. Emits events
 	// for folders that we don't expect (unknown or not shared).
 	// Also, collect a list of folders we do share, and if he's interested in
@@ -972,7 +972,7 @@ func (m *Model) OnHello(remoteID protocol.DeviceID, addr net.Addr, hello protoco
 
 // GetHello is called when we are about to connect to some remote device.
 func (m *Model) GetHello(protocol.DeviceID) protocol.HelloIntf {
-	return &protocol.HelloMessage{
+	return &protocol.Hello{
 		DeviceName:    m.deviceName,
 		ClientName:    m.clientName,
 		ClientVersion: m.clientVersion,
@@ -1620,8 +1620,8 @@ func (m *Model) numHashers(folder string) int {
 
 // generateClusterConfig returns a ClusterConfigMessage that is correct for
 // the given peer device
-func (m *Model) generateClusterConfig(device protocol.DeviceID) protocol.ClusterConfigMessage {
-	var message protocol.ClusterConfigMessage
+func (m *Model) generateClusterConfig(device protocol.DeviceID) protocol.ClusterConfig {
+	var message protocol.ClusterConfig
 
 	m.fmut.RLock()
 	for _, folder := range m.deviceFolders[device] {

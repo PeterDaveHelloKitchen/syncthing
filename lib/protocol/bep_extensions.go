@@ -16,7 +16,7 @@ var (
 	HelloMessageMagic  = uint32(0x2EA7D90B)
 )
 
-func (m HelloMessage) Magic() uint32 {
+func (m Hello) Magic() uint32 {
 	return HelloMessageMagic
 }
 

@@ -73,7 +73,7 @@ func readHello(c io.Reader) (HelloResult, error) {
 			return HelloResult{}, err
 		}
 
-		var hello HelloMessage
+		var hello Hello
 		if err := hello.Unmarshal(buf); err != nil {
 			return HelloResult{}, err
 		}

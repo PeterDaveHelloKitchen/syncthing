@@ -16,7 +16,7 @@ var spaceRe = regexp.MustCompile(`\s`)
 func TestVersion14Hello(t *testing.T) {
 	// Tests that we can send and receive a version 0.14 hello message.
 
-	expected := HelloMessage{
+	expected := Hello{
 		DeviceName:    "test device",
 		ClientName:    "syncthing",
 		ClientVersion: "v0.14.5",
@@ -38,7 +38,7 @@ func TestVersion14Hello(t *testing.T) {
 
 	conn := &readWriter{outBuf, inBuf}
 
-	send := &HelloMessage{
+	send := &Hello{
 		DeviceName:    "this device",
 		ClientName:    "other client",
 		ClientVersion: "v0.14.6",

@@ -250,7 +250,7 @@ func (f FakeConnection) Request(folder, name string, offset int64, size int, has
 	return f.requestData, nil
 }
 
-func (FakeConnection) ClusterConfig(protocol.ClusterConfigMessage) {}
+func (FakeConnection) ClusterConfig(protocol.ClusterConfig) {}
 
 func (FakeConnection) Ping() bool {
 	return true

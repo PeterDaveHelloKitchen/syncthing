@@ -63,8 +63,8 @@ func benchmarkRequestsConnPair(b *testing.B, conn0, conn1 net.Conn) {
 	c1.Start()
 
 	// Satisfy the assertions in the protocol by sending an initial cluster config
-	c0.ClusterConfig(ClusterConfigMessage{})
-	c1.ClusterConfig(ClusterConfigMessage{})
+	c0.ClusterConfig(ClusterConfig{})
+	c1.ClusterConfig(ClusterConfig{})
 
 	// Report some useful stats and reset the timer for the actual test
 	b.ReportAllocs()
@@ -178,7 +178,7 @@ func (m *fakeModel) Request(deviceID DeviceID, folder string, name string, offse
 	return nil
 }
 
-func (m *fakeModel) ClusterConfig(deviceID DeviceID, config ClusterConfigMessage) {
+func (m *fakeModel) ClusterConfig(deviceID DeviceID, config ClusterConfig) {
 }
 
 func (m *fakeModel) Close(deviceID DeviceID, err error) {

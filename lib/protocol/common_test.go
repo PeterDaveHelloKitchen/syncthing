@@ -44,7 +44,7 @@ func (t *TestModel) Close(deviceID DeviceID, err error) {
 	close(t.closedCh)
 }
 
-func (t *TestModel) ClusterConfig(deviceID DeviceID, config ClusterConfigMessage) {
+func (t *TestModel) ClusterConfig(deviceID DeviceID, config ClusterConfig) {
 }
 
 func (t *TestModel) DownloadProgress(DeviceID, string, []FileDownloadProgressUpdate) {

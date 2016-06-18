@@ -30,8 +30,8 @@ func TestPing(t *testing.T) {
 	c0.Start()
 	c1 := NewConnection(c1ID, br, aw, newTestModel(), "name", CompressAlways).(wireFormatConnection).Connection.(*rawConnection)
 	c1.Start()
-	c0.ClusterConfig(ClusterConfigMessage{})
-	c1.ClusterConfig(ClusterConfigMessage{})
+	c0.ClusterConfig(ClusterConfig{})
+	c1.ClusterConfig(ClusterConfig{})
 
 	if ok := c0.ping(); !ok {
 		t.Error("c0 ping failed")
@@ -52,8 +52,8 @@ func TestClose(t *testing.T) {
 	c0.Start()
 	c1 := NewConnection(c1ID, br, aw, m1, "name", CompressAlways)
 	c1.Start()
-	c0.ClusterConfig(ClusterConfigMessage{})
-	c1.ClusterConfig(ClusterConfigMessage{})
+	c0.ClusterConfig(ClusterConfig{})
+	c1.ClusterConfig(ClusterConfig{})
 
 	c0.close(errors.New("manual close"))
 
@@ -81,7 +81,7 @@ func TestMarshalIndexMessage(t *testing.T) {
 		quickCfg.MaxCount = 10
 	}
 
-	f := func(m1 IndexMessage) bool {
+	f := func(m1 Index) bool {
 		if len(m1.Files) == 0 {
 			m1.Files = nil
 		}
@@ -101,7 +101,7 @@ func TestMarshalIndexMessage(t *testing.T) {
 			}
 		}
 
-		return testMarshal(t, "index", &m1, &IndexMessage{})
+		return testMarshal(t, "index", &m1, &Index{})
 	}
 
 	if err := quick.Check(f, quickCfg); err != nil {
@@ -114,11 +114,11 @@ func TestMarshalRequestMessage(t *testing.T) {
 		quickCfg.MaxCount = 10
 	}
 
-	f := func(m1 RequestMessage) bool {
+	f := func(m1 Request) bool {
 		if len(m1.Hash) == 0 {
 			m1.Hash = nil
 		}
-		return testMarshal(t, "request", &m1, &RequestMessage{})
+		return testMarshal(t, "request", &m1, &Request{})
 	}
 
 	if err := quick.Check(f, quickCfg); err != nil {
@@ -131,11 +131,11 @@ func TestMarshalResponseMessage(t *testing.T) {
 		quickCfg.MaxCount = 10
 	}
 
-	f := func(m1 ResponseMessage) bool {
+	f := func(m1 Response) bool {
 		if len(m1.Data) == 0 {
 			m1.Data = nil
 		}
-		return testMarshal(t, "response", &m1, &ResponseMessage{})
+		return testMarshal(t, "response", &m1, &Response{})
 	}
 
 	if err := quick.Check(f, quickCfg); err != nil {
@@ -148,7 +148,7 @@ func TestMarshalClusterConfigMessage(t *testing.T) {
 		quickCfg.MaxCount = 10
 	}
 
-	f := func(m1 ClusterConfigMessage) bool {
+	f := func(m1 ClusterConfig) bool {
 		if len(m1.Folders) == 0 {
 			m1.Folders = nil
 		}
@@ -157,7 +157,7 @@ func TestMarshalClusterConfigMessage(t *testing.T) {
 				m1.Folders[i].Devices = nil
 			}
 		}
-		return testMarshal(t, "clusterconfig", &m1, &ClusterConfigMessage{})
+		return testMarshal(t, "clusterconfig", &m1, &ClusterConfig{})
 	}
 
 	if err := quick.Check(f, quickCfg); err != nil {
@@ -170,8 +170,8 @@ func TestMarshalCloseMessage(t *testing.T) {
 		quickCfg.MaxCount = 10
 	}
 
-	f := func(m1 CloseMessage) bool {
-		return testMarshal(t, "close", &m1, &CloseMessage{})
+	f := func(m1 Close) bool {
+		return testMarshal(t, "close", &m1, &Close{})
 	}
 
 	if err := quick.Check(f, quickCfg); err != nil {
@@ -237,7 +237,7 @@ func TestMarshalledIndexMessageSize(t *testing.T) {
 		f.Blocks[i].Hash = []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 20, 1, 2, 3, 4, 5, 6, 7, 8, 9, 30, 1, 2}
 	}
 
-	idx := IndexMessage{
+	idx := Index{
 		Folder: "some folder ID",
 		Files:  []FileInfo{f},
 	}

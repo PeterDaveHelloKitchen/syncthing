@@ -14,7 +14,7 @@ option (gogoproto.goproto_enum_prefix_all) = false;
 
 // Pre-auth
 
-message HelloMessage {
+message Hello {
     string device_name    = 1;
     string client_name    = 2;
     string client_version = 3;
@@ -34,19 +34,19 @@ enum MessageCompression {
 }
 
 message Message {
-    ClusterConfigMessage    cluster_config    = 1;
-    IndexMessage            index             = 2;
-    IndexMessage            index_update      = 3;
-    RequestMessage          request           = 4;
-    ResponseMessage         response          = 5;
-    DownloadProgressMessage download_progress = 6;
-    PingMessage             ping              = 7;
-    CloseMessage            close             = 8;
+    ClusterConfig    cluster_config    = 1;
+    Index            index             = 2;
+    Index            index_update      = 3;
+    Request          request           = 4;
+    Response         response          = 5;
+    DownloadProgress download_progress = 6;
+    Ping             ping              = 7;
+    Close            close             = 8;
 }
 
 // Cluster Config
 
-message ClusterConfigMessage {
+message ClusterConfig {
     repeated Folder folders = 1 [(gogoproto.nullable) = false];
 }
 
@@ -79,7 +79,7 @@ enum Compression {
 
 // Index and Index Update
 
-message IndexMessage {
+message Index {
     string            folder = 1;
     repeated FileInfo files  = 2 [(gogoproto.nullable) = false];
 }
@@ -126,7 +126,7 @@ message Counter {
 
 // Request
 
-message RequestMessage {
+message Request {
     int32  id             = 1 [(gogoproto.customname) = "ID"];
     string folder         = 2;
     string name           = 3;
@@ -138,10 +138,10 @@ message RequestMessage {
 
 // Response
 
-message ResponseMessage {
-    int32     id   = 7 [(gogoproto.customname) = "ID"];
-    bytes     data = 1;
-    ErrorCode code = 2;
+message Response {
+    int32     id   = 1 [(gogoproto.customname) = "ID"];
+    bytes     data = 2;
+    ErrorCode code = 3;
 }
 
 enum ErrorCode {
@@ -153,7 +153,7 @@ enum ErrorCode {
 
 // DownloadProgress
 
-message DownloadProgressMessage {
+message DownloadProgress {
     string                              folder  = 1;
     repeated FileDownloadProgressUpdate updates = 2 [(gogoproto.nullable) = false];
 }
@@ -172,12 +172,12 @@ enum FileDownloadProgressUpdateType {
 
 // Ping
 
-message PingMessage {
+message Ping {
 }
 
 // Close
 
-message CloseMessage {
+message Close {
     string reason = 1;
 }
 
