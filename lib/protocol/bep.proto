@@ -12,7 +12,7 @@ option (gogoproto.protosizer_all) = true;
 option (gogoproto.goproto_enum_stringer_all) = true;
 option (gogoproto.goproto_enum_prefix_all) = false;
 
-// Pre-auth
+// --- Pre-auth ---
 
 message Hello {
     string device_name    = 1;
@@ -20,7 +20,19 @@ message Hello {
     string client_version = 3;
 }
 
-// Message types
+// --- Header ---
+
+message Header {
+    MessageType        type                = 1;
+    int32              length              = 2;
+    MessageCompression compression         = 3;
+    int32              uncompressed_length = 4; // only set when compression != NONE
+}
+
+enum MessageCompression {
+    NONE = 0 [(gogoproto.enumvalue_customname) = "MessageCompressionNone"];
+    LZ4  = 1 [(gogoproto.enumvalue_customname) = "MessageCompressionLZ4"];
+}
 
 enum MessageType {
     CLUSTER_CONFIG    = 0 [(gogoproto.enumvalue_customname) = "messageTypeClusterConfig"];
@@ -32,6 +44,8 @@ enum MessageType {
     PING              = 6 [(gogoproto.enumvalue_customname) = "messageTypePing"];
     CLOSE             = 7 [(gogoproto.enumvalue_customname) = "messageTypeClose"];
 }
+
+// --- Actual messages ---
 
 // Cluster Config
 

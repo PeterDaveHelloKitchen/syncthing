@@ -180,11 +180,6 @@ func TestMarshalCloseMessage(t *testing.T) {
 	}
 }
 
-type message interface {
-	Marshal() ([]byte, error)
-	Unmarshal([]byte) error
-}
-
 func testMarshal(t *testing.T, prefix string, m1, m2 message) bool {
 	buf, err := m1.Marshal()
 	if err != nil {
