@@ -4,6 +4,7 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -263,7 +264,13 @@ func TestLZ4Compression(t *testing.T) {
 			t.Errorf("compressing %d bytes: %v", dataLen, err)
 			continue
 		}
-		res, err := c.lz4Decompress(comp, int32(dataLen))
+
+		uncompLen := binary.BigEndian.Uint32(comp)
+		if uncompLen != uint32(len(data)) {
+			t.Errorf("uncorrect uncompressed len %d != %d", uncompLen, len(data))
+		}
+
+		res, err := c.lz4Decompress(comp)
 		if err != nil {
 			t.Errorf("decompressing %d bytes to %d: %v", len(comp), dataLen, err)
 			continue

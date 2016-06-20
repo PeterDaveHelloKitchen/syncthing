@@ -20,24 +20,17 @@ message Hello {
     string client_version = 3;
 }
 
-// Wrapping stuff
+// Message types
 
-message Message {
-    ClusterConfig    cluster_config    = 1;
-    Index            index             = 2;
-    Index            index_update      = 3;
-    Request          request           = 4;
-    Response         response          = 5;
-    DownloadProgress download_progress = 6;
-    Ping             ping              = 7;
-    Close            close             = 8;
-
-    CompressedMessage compressed = 16;
-}
-
-message CompressedMessage {
-    bytes data                = 1;
-    int32 uncompressed_length = 2;
+enum MessageType {
+    CLUSTER_CONFIG    = 0 [(gogoproto.enumvalue_customname) = "messageTypeClusterConfig"];
+    INDEX             = 1 [(gogoproto.enumvalue_customname) = "messageTypeIndex"];
+    INDEX_UPDATE      = 2 [(gogoproto.enumvalue_customname) = "messageTypeIndexUpdate"];
+    REQUEST           = 3 [(gogoproto.enumvalue_customname) = "messageTypeRequest"];
+    RESPONSE          = 4 [(gogoproto.enumvalue_customname) = "messageTypeResponse"];
+    DOWNLOAD_PROGRESS = 5 [(gogoproto.enumvalue_customname) = "messageTypeDownloadProgress"];
+    PING              = 6 [(gogoproto.enumvalue_customname) = "messageTypePing"];
+    CLOSE             = 7 [(gogoproto.enumvalue_customname) = "messageTypeClose"];
 }
 
 // Cluster Config
@@ -76,6 +69,11 @@ enum Compression {
 // Index and Index Update
 
 message Index {
+    string            folder = 1;
+    repeated FileInfo files  = 2 [(gogoproto.nullable) = false];
+}
+
+message IndexUpdate {
     string            folder = 1;
     repeated FileInfo files  = 2 [(gogoproto.nullable) = false];
 }
