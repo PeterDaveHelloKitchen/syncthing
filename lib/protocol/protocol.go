@@ -110,7 +110,6 @@ type rawConnection struct {
 	readerBuf []byte
 
 	// used by the lz4 methods
-	lz4DecompBuf []byte
 	lz4CompBuf   []byte
 	lz4UncompBuf []byte
 
@@ -763,7 +762,7 @@ func (c *rawConnection) lz4Decompress(src []byte) ([]byte, error) {
 	// Convert the length word to little endian for the LZ4 package
 	binary.LittleEndian.PutUint32(src, binary.BigEndian.Uint32(src))
 	var err error
-	c.lz4UncompBuf, err = lz4.Decode(c.lz4UncompBuf, src)
+	c.lz4UncompBuf, err = lz4.Decode(c.lz4UncompBuf[:cap(c.lz4UncompBuf)], src)
 	if err != nil {
 		return nil, err
 	}
