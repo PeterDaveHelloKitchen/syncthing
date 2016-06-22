@@ -23,10 +23,9 @@ message Hello {
 // --- Header ---
 
 message Header {
-    MessageType        type                = 1;
-    int32              length              = 2;
-    MessageCompression compression         = 3;
-    int32              uncompressed_length = 4; // only set when compression != NONE
+    MessageType        type        = 1;
+    int32              length      = 2;
+    MessageCompression compression = 3;
 }
 
 enum MessageCompression {

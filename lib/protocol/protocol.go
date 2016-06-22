@@ -385,27 +385,27 @@ func (c *rawConnection) readMessage() (message, error) {
 		return nil, fmt.Errorf("unmarshalling header: %v", err)
 	}
 
-	// Then the actual message. We do an ugly trick here and read at an
-	// offset four bytes into the buffer. The reason is that for compressed
-	// messages we need to pass the buffer to lz4Decompress, which expects
-	// the compressed message to be prefixed with a length. To avoid having
-	// to do an extra copy, we reserve space for the length in front of the
-	// message so we can fix that up when necessary.
-
-	if len(c.readerBuf) < int(hdr.Length)+4 {
-		c.readerBuf = make([]byte, hdr.Length+4)
+	if len(c.readerBuf) < int(hdr.Length) {
+		c.readerBuf = make([]byte, hdr.Length)
 	}
-	if _, err := io.ReadFull(c.cr, c.readerBuf[4:hdr.Length+4]); err != nil {
+	if _, err := io.ReadFull(c.cr, c.readerBuf[:hdr.Length]); err != nil {
 		return nil, fmt.Errorf("reading message: %v", err)
 	}
 
-	buf := c.readerBuf[4 : hdr.Length+4]
-	if hdr.Compression == MessageCompressionLZ4 {
+	var buf []byte
+	switch hdr.Compression {
+	case MessageCompressionNone:
+		buf = c.readerBuf[:hdr.Length]
+
+	case MessageCompressionLZ4:
 		var err error
-		buf, err = c.lz4Decompress(c.readerBuf[:hdr.Length+4], hdr.UncompressedLength)
+		buf, err = c.lz4Decompress(c.readerBuf[:hdr.Length])
 		if err != nil {
 			return nil, fmt.Errorf("decompressing message: %v", err)
 		}
+
+	default:
+		return nil, fmt.Errorf("unknown message compression %d", hdr.Compression)
 	}
 
 	msg := c.newMessage(hdr.Type)
@@ -546,10 +546,9 @@ func (c *rawConnection) writeCompressedMessage(hm asyncMessage) error {
 	}
 
 	hdr := Header{
-		Type:               c.typeOf(hm.msg),
-		Length:             int32(len(compressed)),
-		Compression:        MessageCompressionLZ4,
-		UncompressedLength: int32(size),
+		Type:        c.typeOf(hm.msg),
+		Length:      int32(len(compressed)),
+		Compression: MessageCompressionLZ4,
 	}
 	hdrSize := hdr.ProtoSize()
 
@@ -753,17 +752,17 @@ func (c *rawConnection) Statistics() Statistics {
 
 func (c *rawConnection) lz4Compress(src []byte) ([]byte, error) {
 	var err error
-	c.lz4CompBuf, err = lz4.Encode(c.lz4CompBuf, src)
+	c.lz4CompBuf, err = lz4.Encode(c.lz4CompBuf[:cap(c.lz4CompBuf)], src)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.lz4CompBuf[4:], nil
+	binary.BigEndian.PutUint32(c.lz4CompBuf, binary.LittleEndian.Uint32(c.lz4CompBuf))
+	return c.lz4CompBuf, nil
 }
 
-func (c *rawConnection) lz4Decompress(src []byte, uncomplen int32) ([]byte, error) {
-	// Convert the length word to little endian for the LZ4 package
-	binary.LittleEndian.PutUint32(src, uint32(uncomplen))
+func (c *rawConnection) lz4Decompress(src []byte) ([]byte, error) {
+	binary.LittleEndian.PutUint32(src, binary.BigEndian.Uint32(src))
 	var err error
 	c.lz4UncompBuf, err = lz4.Decode(c.lz4UncompBuf[:cap(c.lz4UncompBuf)], src)
 	if err != nil {

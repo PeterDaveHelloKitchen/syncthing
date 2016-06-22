@@ -259,10 +259,7 @@ func TestLZ4Compression(t *testing.T) {
 			continue
 		}
 
-		tmp := make([]byte, len(comp)+4)
-		copy(tmp[4:], comp)
-
-		res, err := c.lz4Decompress(tmp, int32(len(data)))
+		res, err := c.lz4Decompress(comp)
 		if err != nil {
 			t.Errorf("decompressing %d bytes to %d: %v", len(comp), dataLen, err)
 			continue
