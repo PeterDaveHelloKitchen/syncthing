@@ -28,11 +28,6 @@ message Header {
     MessageCompression compression = 3;
 }
 
-enum MessageCompression {
-    NONE = 0 [(gogoproto.enumvalue_customname) = "MessageCompressionNone"];
-    LZ4  = 1 [(gogoproto.enumvalue_customname) = "MessageCompressionLZ4"];
-}
-
 enum MessageType {
     CLUSTER_CONFIG    = 0 [(gogoproto.enumvalue_customname) = "messageTypeClusterConfig"];
     INDEX             = 1 [(gogoproto.enumvalue_customname) = "messageTypeIndex"];
@@ -42,6 +37,11 @@ enum MessageType {
     DOWNLOAD_PROGRESS = 5 [(gogoproto.enumvalue_customname) = "messageTypeDownloadProgress"];
     PING              = 6 [(gogoproto.enumvalue_customname) = "messageTypePing"];
     CLOSE             = 7 [(gogoproto.enumvalue_customname) = "messageTypeClose"];
+}
+
+enum MessageCompression {
+    NONE = 0 [(gogoproto.enumvalue_customname) = "MessageCompressionNone"];
+    LZ4  = 1 [(gogoproto.enumvalue_customname) = "MessageCompressionLZ4"];
 }
 
 // --- Actual messages ---
