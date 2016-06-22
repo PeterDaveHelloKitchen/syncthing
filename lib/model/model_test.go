@@ -145,7 +145,7 @@ func genFiles(n int) []protocol.FileInfo {
 		files[i] = protocol.FileInfo{
 			Name:     fmt.Sprintf("file%d", i),
 			Modified: t,
-			Blocks:   []protocol.BlockInfo{{0, 100, []byte("some hash bytes")}},
+			Blocks:   []protocol.BlockInfo{{Offset: 0, Size: 100, Hash: []byte("some hash bytes")}},
 		}
 	}
 
@@ -285,7 +285,7 @@ func BenchmarkRequest(b *testing.B) {
 		files[i] = protocol.FileInfo{
 			Name:     fmt.Sprintf("file%d", i),
 			Modified: t,
-			Blocks:   []protocol.BlockInfo{{0, 100, []byte("some hash bytes")}},
+			Blocks:   []protocol.BlockInfo{{Offset: 0, Size: 100, Hash: []byte("some hash bytes")}},
 		}
 	}
 
@@ -1146,7 +1146,7 @@ func genDeepFiles(n, d int) []protocol.FileInfo {
 		}
 
 		files[i].Modified = t
-		files[i].Blocks = []protocol.BlockInfo{{0, 100, []byte("some hash bytes")}}
+		files[i].Blocks = []protocol.BlockInfo{{Offset: 0, Size: 100, Hash: []byte("some hash bytes")}}
 	}
 
 	return files
