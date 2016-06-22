@@ -361,15 +361,18 @@ func (c *rawConnection) readerLoop() (err error) {
 }
 
 func (c *rawConnection) readMessage() (message, error) {
-	// First comes a 4 byte length
+	// First comes a 2 byte header length
 
-	if len(c.readerBuf) < 4 {
-		c.readerBuf = make([]byte, 6)
+	if len(c.readerBuf) < 2 {
+		c.readerBuf = make([]byte, 2)
 	}
-	if _, err := io.ReadFull(c.cr, c.readerBuf[:4]); err != nil {
+	if _, err := io.ReadFull(c.cr, c.readerBuf[:2]); err != nil {
 		return nil, fmt.Errorf("reading length: %v", err)
 	}
-	hdrLen := binary.BigEndian.Uint32(c.readerBuf)
+	hdrLen := int16(binary.BigEndian.Uint16(c.readerBuf))
+	if hdrLen < 0 {
+		return nil, fmt.Errorf("reading header: negative header size %d", hdrLen)
+	}
 
 	// Then comes the header
 
@@ -384,6 +387,8 @@ func (c *rawConnection) readMessage() (message, error) {
 	if err := hdr.Unmarshal(c.readerBuf[:hdrLen]); err != nil {
 		return nil, fmt.Errorf("unmarshalling header: %v", err)
 	}
+
+	// Then the message
 
 	if len(c.readerBuf) < int(hdr.Length) {
 		c.readerBuf = make([]byte, hdr.Length)
@@ -551,20 +556,23 @@ func (c *rawConnection) writeCompressedMessage(hm asyncMessage) error {
 		Compression: MessageCompressionLZ4,
 	}
 	hdrSize := hdr.ProtoSize()
+	if hdrSize > 1<<16-1 {
+		panic("impossibly large header")
+	}
 
-	totSize := 4 + hdrSize + len(compressed)
+	totSize := 2 + hdrSize + len(compressed)
 	if len(c.writeBuf) < totSize {
 		c.writeBuf = make([]byte, totSize)
 	}
 
-	binary.BigEndian.PutUint32(c.writeBuf, uint32(hdrSize))
-	if _, err := hdr.MarshalTo(c.writeBuf[4:]); err != nil {
+	binary.BigEndian.PutUint16(c.writeBuf, uint16(hdrSize))
+	if _, err := hdr.MarshalTo(c.writeBuf[2:]); err != nil {
 		return fmt.Errorf("marshalling header: %v", err)
 	}
-	copy(c.writeBuf[4+hdrSize:], compressed)
+	copy(c.writeBuf[2+hdrSize:], compressed)
 
 	n, err := c.cw.Write(c.writeBuf[:totSize])
-	l.Debugf("wrote %d bytes on the wire (4 bytes length, %d bytes header, %d bytes message, %d uncompressed), err=%v", n, hdrSize, len(compressed), size, err)
+	l.Debugf("wrote %d bytes on the wire (2 bytes length, %d bytes header, %d bytes message, %d uncompressed), err=%v", n, hdrSize, len(compressed), size, err)
 	if err != nil {
 		return fmt.Errorf("writing message: %v", err)
 	}
@@ -579,17 +587,20 @@ func (c *rawConnection) writeUncompressedMessage(hm asyncMessage) error {
 		Length: int32(size),
 	}
 	hdrSize := hdr.ProtoSize()
+	if hdrSize > 1<<16-1 {
+		panic("impossibly large header")
+	}
 
-	totSize := 4 + hdrSize + size
+	totSize := 2 + hdrSize + size
 	if len(c.writeBuf) < totSize {
 		c.writeBuf = make([]byte, totSize)
 	}
 
-	binary.BigEndian.PutUint32(c.writeBuf, uint32(hdrSize))
-	if _, err := hdr.MarshalTo(c.writeBuf[4:]); err != nil {
+	binary.BigEndian.PutUint16(c.writeBuf, uint16(hdrSize))
+	if _, err := hdr.MarshalTo(c.writeBuf[2:]); err != nil {
 		return fmt.Errorf("marshalling header: %v", err)
 	}
-	if _, err := hm.msg.MarshalTo(c.writeBuf[4+hdrSize:]); err != nil {
+	if _, err := hm.msg.MarshalTo(c.writeBuf[2+hdrSize:]); err != nil {
 		return fmt.Errorf("marshalling message: %v", err)
 	}
 	if hm.done != nil {
@@ -597,7 +608,7 @@ func (c *rawConnection) writeUncompressedMessage(hm asyncMessage) error {
 	}
 
 	n, err := c.cw.Write(c.writeBuf[:totSize])
-	l.Debugf("wrote %d bytes on the wire (4 bytes length, %d bytes header, %d bytes message), err=%v", n, hdrSize, size, err)
+	l.Debugf("wrote %d bytes on the wire (2 bytes length, %d bytes header, %d bytes message), err=%v", n, hdrSize, size, err)
 	if err != nil {
 		return fmt.Errorf("writing message: %v", err)
 	}
