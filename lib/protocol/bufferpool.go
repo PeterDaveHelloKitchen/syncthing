@@ -9,10 +9,6 @@ type bufferPool struct {
 	pool    sync.Pool
 }
 
-func newBufferPool() *bufferPool {
-	return &bufferPool{}
-}
-
 // get returns a new buffer of the requested size
 func (p *bufferPool) get(size int) []byte {
 	intf := p.pool.Get()
@@ -22,6 +18,7 @@ func (p *bufferPool) get(size int) []byte {
 
 	bs := intf.([]byte)
 	if cap(bs) < size {
+		p.put(bs)
 		return p.new(size)
 	}
 
