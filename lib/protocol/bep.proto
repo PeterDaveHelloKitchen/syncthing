@@ -24,8 +24,7 @@ message Hello {
 
 message Header {
     MessageType        type        = 1;
-    int32              length      = 2;
-    MessageCompression compression = 3;
+    MessageCompression compression = 2;
 }
 
 enum MessageType {
